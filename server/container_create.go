@@ -880,7 +880,18 @@ func (s *Server) createSandboxContainer(ctx context.Context, ctr container.Conta
 			}
 		}
 
-		specgen.SetLinuxCgroupsPath(s.config.CgroupManager().ContainerCgroupPath(sb.CgroupParent(), containerID))
+		// Check if this is a sub-pod and handle cgroup path specially
+		// For sub-pods, we use filesystem paths directly to create nested cgroups
+		var containerCgroupPath string
+		if parentPodUID, hasParent := sb.Annotations()[crioann.ParentPodUIDAnnotation]; hasParent && parentPodUID != "" {
+			// For sub-pods, sb.CgroupParent() is the parent's actual filesystem path
+			// Construct container path directly under parent scope using filesystem path
+			containerCgroupPath = filepath.Join(sb.CgroupParent(), "crio-"+containerID+".scope")
+			log.Debugf(ctx, "Sub-pod container %s cgroup path: %s (under parent scope %s)", containerID, containerCgroupPath, sb.CgroupParent())
+		} else {
+			containerCgroupPath = s.config.CgroupManager().ContainerCgroupPath(sb.CgroupParent(), containerID)
+		}
+		specgen.SetLinuxCgroupsPath(containerCgroupPath)
 
 		if len(securityContext.GetMaskedPaths()) != 0 {
 			securityContext.MaskedPaths = appendDefaultMaskedPaths(securityContext.GetMaskedPaths())

@@ -36,6 +36,7 @@ import (
 	"github.com/cri-o/cri-o/pkg/annotations"
 	libconfig "github.com/cri-o/cri-o/pkg/config"
 	"github.com/cri-o/cri-o/utils"
+	"github.com/sirupsen/logrus"
 )
 
 // DefaultUserNSSize is the default size for the user namespace created.
@@ -800,9 +801,96 @@ func (s *Server) runPodSandbox(ctx context.Context, req *types.RunPodSandboxRequ
 		return nil, err
 	}
 
-	cgroupParent, cgroupPath, err := s.config.CgroupManager().SandboxCgroupPath(sbox.Config().GetLinux().GetCgroupParent(), sboxID, containerMinMemory)
-	if err != nil {
-		return nil, err
+	// Check if this pod should be created as a sub-pod under a parent pod
+	requestedCgroupParent := sbox.Config().GetLinux().GetCgroupParent()
+	// Debug: Log all annotations to verify the annotation is present
+	// Use logrus directly to ensure it's always visible, bypassing any filtering
+	logrus.WithContext(ctx).WithField("pod", sboxID).WithField("annotation_key", annotations.ParentPodUIDAnnotation).Debug("Checking for ParentPodUID annotation")
+	if val, ok := kubeAnnotations[annotations.ParentPodUIDAnnotation]; ok {
+		logrus.WithContext(ctx).WithField("pod", sboxID).WithField("annotation", annotations.ParentPodUIDAnnotation).WithField("value", val).Info("Found ParentPodUID annotation in kubeAnnotations")
+	} else {
+		logrus.WithContext(ctx).WithField("pod", sboxID).Warn("ParentPodUID annotation NOT found in kubeAnnotations")
+		// Also check in sbox.Config().GetAnnotations() in case it's there
+		if val, ok := sbox.Config().GetAnnotations()[annotations.ParentPodUIDAnnotation]; ok {
+			logrus.WithContext(ctx).WithField("pod", sboxID).WithField("annotation", annotations.ParentPodUIDAnnotation).WithField("value", val).Error("ParentPodUID annotation found in sbox.Config() but NOT in kubeAnnotations - this is a bug!")
+		}
+	}
+	if parentPodUID, hasParent := kubeAnnotations[annotations.ParentPodUIDAnnotation]; hasParent && parentPodUID != "" {
+		log.Infof(ctx, "Sub-pod creation requested: pod %s (UID: %s) has parent pod UID annotation: %s", sboxID, kubePodUID, parentPodUID)
+		parentSandbox, err := s.findSandboxByUID(ctx, parentPodUID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to find parent pod with UID %s: %w", parentPodUID, err)
+		}
+		if parentSandbox == nil {
+			return nil, fmt.Errorf("parent pod with UID %s not found", parentPodUID)
+		}
+		// Use the parent pod's actual cgroup path as the base for this sub-pod
+		// We need to get the parent's systemd unit path (scope) to use as the parent for sub-pod
+		parentCgroupParent := parentSandbox.CgroupParent()
+		parentSandboxID := parentSandbox.ID()
+		log.Debugf(ctx, "Parent pod found: ID=%s, UID=%s, cgroup parent=%s", parentSandboxID, parentPodUID, parentCgroupParent)
+		
+		if s.config.CgroupManager().IsSystemd() {
+			// For systemd, we need to get the parent's actual filesystem cgroup path
+			// Systemd doesn't support creating scopes under scopes, so we'll use the
+			// filesystem path directly and let the runtime create the cgroup via cgroupfs
+			parentSandboxMgr, err := s.config.CgroupManager().SandboxCgroupManager(parentCgroupParent, parentSandboxID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get parent sandbox cgroup manager: %w", err)
+			}
+			parentActualPath := parentSandboxMgr.Path("")
+			if parentActualPath == "" {
+				return nil, fmt.Errorf("failed to get parent sandbox actual cgroup path")
+			}
+			// Use the parent's actual filesystem path as the requested parent
+			// We'll use filesystem paths in the OCI spec to create nested cgroups
+			requestedCgroupParent = parentActualPath
+			log.Infof(ctx, "Creating sub-pod %s under parent pod %s (UID: %s) - using systemd cgroup manager", sboxID, parentSandboxID, parentPodUID)
+			log.Infof(ctx, "Parent sandbox actual cgroup path: %s", parentActualPath)
+			log.Infof(ctx, "Sub-pod will use parent filesystem path as: %s", requestedCgroupParent)
+		} else {
+			// For cgroupfs, get the parent's actual filesystem cgroup path
+			parentSandboxMgr, err := s.config.CgroupManager().SandboxCgroupManager(parentCgroupParent, parentSandboxID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get parent sandbox cgroup manager: %w", err)
+			}
+			parentActualPath := parentSandboxMgr.Path("")
+			if parentActualPath == "" {
+				return nil, fmt.Errorf("failed to get parent sandbox actual cgroup path")
+			}
+			// Use the parent's actual filesystem path as the requested parent
+			requestedCgroupParent = parentActualPath
+			log.Infof(ctx, "Creating sub-pod %s under parent pod %s (UID: %s) - using cgroupfs cgroup manager", sboxID, parentSandboxID, parentPodUID)
+			log.Infof(ctx, "Parent sandbox actual cgroup path: %s", parentActualPath)
+			log.Infof(ctx, "Sub-pod will use parent cgroup path as: %s", requestedCgroupParent)
+		}
+	}
+
+	var cgroupParent, cgroupPath string
+
+	// For sub-pods, we use the parent's actual filesystem path directly
+	// This works for both systemd and cgroupfs - we use filesystem paths in the OCI spec
+	// to create nested cgroups under the parent scope
+	if parentPodUID, hasParent := kubeAnnotations[annotations.ParentPodUIDAnnotation]; hasParent && parentPodUID != "" {
+		// For sub-pods, requestedCgroupParent is the parent's actual filesystem path
+		// Use it directly and construct the sub-pod's cgroup path under it
+		cgroupParent = requestedCgroupParent
+		// Construct the sub-pod's cgroup path directly under parent scope
+		// Format: parentFilesystemPath/crio-<sandboxID>.scope
+		cgroupPath = filepath.Join(requestedCgroupParent, "crio-"+sboxID+".scope")
+		log.Infof(ctx, "Sub-pod %s cgroup path (under parent scope): %s", sboxID, cgroupPath)
+		log.Infof(ctx, "Sub-pod %s will use parent filesystem path: %s", sboxID, cgroupParent)
+	} else {
+		var err error
+		cgroupParent, cgroupPath, err = s.config.CgroupManager().SandboxCgroupPath(requestedCgroupParent, sboxID, containerMinMemory)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Log the final cgroup paths for sub-pods
+	if _, hasParent := kubeAnnotations[annotations.ParentPodUIDAnnotation]; hasParent {
+		log.Infof(ctx, "Sub-pod %s cgroup configuration - parent: %s, path: %s", sboxID, cgroupParent, cgroupPath)
 	}
 
 	if cgroupPath != "" {
@@ -1249,6 +1337,45 @@ func (s *Server) runPodSandbox(ctx context.Context, req *types.RunPodSandboxRequ
 	resp = &types.RunPodSandboxResponse{PodSandboxId: sboxID}
 
 	return resp, nil
+}
+
+// findSandboxByUID finds a sandbox by its Kubernetes pod UID by searching through all sandboxes
+// and matching the UID label.
+func (s *Server) findSandboxByUID(ctx context.Context, podUID string) (*libsandbox.Sandbox, error) {
+	if podUID == "" {
+		return nil, fmt.Errorf("pod UID cannot be empty")
+	}
+
+	// List all sandboxes and filter by the Kubernetes pod UID label
+	listReq := &types.ListPodSandboxRequest{
+		Filter: &types.PodSandboxFilter{
+			LabelSelector: map[string]string{
+				kubeletTypes.KubernetesPodUIDLabel: podUID,
+			},
+		},
+	}
+
+	listResp, err := s.ListPodSandbox(ctx, listReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list sandboxes: %w", err)
+	}
+
+	if len(listResp.GetItems()) == 0 {
+		return nil, nil
+	}
+
+	if len(listResp.GetItems()) > 1 {
+		return nil, fmt.Errorf("multiple sandboxes found with UID %s", podUID)
+	}
+
+	// Get the sandbox ID from the response and retrieve the sandbox
+	sandboxID := listResp.GetItems()[0].GetId()
+	sandbox := s.GetSandbox(sandboxID)
+	if sandbox == nil {
+		return nil, fmt.Errorf("sandbox %s not found after listing", sandboxID)
+	}
+
+	return sandbox, nil
 }
 
 // populateSandboxLabels adds some fields that Kubelet specifies by default, but other clients (crictl) does not.
