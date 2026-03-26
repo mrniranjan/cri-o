@@ -26,6 +26,8 @@ import (
 	kubeletTypes "k8s.io/kubelet/pkg/types"
 
 	"github.com/cri-o/cri-o/internal/annotations"
+	"github.com/cri-o/cri-o/internal/config/cgmgr"
+	"github.com/cri-o/cri-o/internal/config/node"
 	"github.com/cri-o/cri-o/internal/config/nsmgr"
 	ctrfactory "github.com/cri-o/cri-o/internal/factory/container"
 	"github.com/cri-o/cri-o/internal/lib/constants"
@@ -640,7 +642,7 @@ func (s *Server) runPodSandbox(ctx context.Context, req *types.RunPodSandboxRequ
 		return nil, err
 	}
 
-	cgroupParent, err := s.setupSandboxCgroupPath(sbox, g, sboxID, runtimeHandler)
+	cgroupParent, err := s.setupSandboxCgroupPath(ctx, sbox, g, sboxID, runtimeHandler, kubeAnnotations, usernsMode, kubePodUID)
 	if err != nil {
 		return nil, err
 	}
@@ -1139,25 +1141,101 @@ func (s *Server) setupSandboxPortMappings(sbox libsandbox.Builder, g *generate.G
 	return nil
 }
 
-func (s *Server) setupSandboxCgroupPath(sbox libsandbox.Builder, g *generate.Generator, sboxID, runtimeHandler string) (string, error) {
+func (s *Server) setupSandboxCgroupPath(ctx context.Context, sbox libsandbox.Builder, g *generate.Generator, sboxID, runtimeHandler string, kubeAnnotations map[string]string, usernsMode, kubePodUID string) (string, error) {
+	_ = ctx
+
 	containerMinMemory, err := s.ContainerServer.Runtime().GetContainerMinMemory(runtimeHandler)
 	if err != nil {
 		return "", err
 	}
 
-	cgroupParent, cgroupPath, err := s.config.CgroupManager().SandboxCgroupPath(sbox.Config().GetLinux().GetCgroupParent(), sboxID, containerMinMemory)
+	kubeletSlice := sbox.Config().GetLinux().GetCgroupParent()
+
+	cgroupParent, cgroupPath, err := s.config.CgroupManager().SandboxCgroupPath(kubeletSlice, sboxID, containerMinMemory)
 	if err != nil {
 		return "", err
 	}
 
-	if cgroupPath != "" {
-		g.SetLinuxCgroupsPath(cgroupPath)
+	parentUID, parentAnnSet := v2.GetAnnotationValue(kubeAnnotations, v2.ParentPodUID)
+	if !parentAnnSet || parentUID == "" {
+		if cgroupPath != "" {
+			g.SetLinuxCgroupsPath(cgroupPath)
+		}
+
+		sbox.SetCgroupParent(cgroupParent)
+		g.AddAnnotation(annotations.CgroupParent, cgroupParent)
+
+		return cgroupParent, nil
 	}
 
+	_ = cgroupPath
+
+	if parentUID == kubePodUID {
+		return "", fmt.Errorf("sub-pod cgroup nesting: %s cannot reference this pod's own UID", v2.ParentPodUID)
+	}
+
+	if unshare.IsRootless() {
+		return "", fmt.Errorf("sub-pod cgroup nesting is not supported in rootless mode")
+	}
+
+	if usernsMode != "" {
+		return "", fmt.Errorf("sub-pod cgroup nesting is not supported with user namespaces")
+	}
+
+	if !node.CgroupIsV2() {
+		return "", fmt.Errorf("sub-pod cgroup nesting requires cgroup v2")
+	}
+
+	if !s.config.CgroupManager().IsSystemd() {
+		return "", fmt.Errorf("sub-pod cgroup nesting requires systemd cgroup driver")
+	}
+
+	parentSB := s.sandboxByKubePodUID(parentUID)
+	if parentSB == nil {
+		return "", fmt.Errorf("sub-pod cgroup nesting: no running sandbox found for parent pod UID %q", parentUID)
+	}
+
+	if parentSB.SubpodCgroupBase() != "" {
+		return "", fmt.Errorf("sub-pod cgroup nesting: parent %q is already a sub-pod; chaining is not supported", parentUID)
+	}
+
+	parentScopeAbs, err := s.config.CgroupManager().ContainerCgroupAbsolutePath(parentSB.CgroupParent(), parentSB.ID())
+	if err != nil {
+		return "", fmt.Errorf("sub-pod cgroup nesting: resolve parent scope: %w", err)
+	}
+
+	subpodBaseAbs := filepath.Join(parentScopeAbs, "subpods", sboxID)
+
+	if err := cgmgr.EnsureSubpodSandboxCgroups(parentScopeAbs, sboxID, sboxID); err != nil {
+		return "", fmt.Errorf("sub-pod cgroup nesting: create cgroup hierarchy (is the parent cgroup delegated?): %w", err)
+	}
+
+	infraAbs := cgmgr.SubpodInfraCgroupAbsPath(subpodBaseAbs, sboxID)
+
+	ociRel, err := cgmgr.OCIRelativeCgroupPath(infraAbs)
+	if err != nil {
+		return "", fmt.Errorf("sub-pod cgroup nesting: OCI cgroup path: %w", err)
+	}
+
+	g.SetLinuxCgroupsPath(ociRel)
 	sbox.SetCgroupParent(cgroupParent)
+	sbox.SetParentPodUID(parentUID)
+	sbox.SetSubpodCgroupBase(subpodBaseAbs)
 	g.AddAnnotation(annotations.CgroupParent, cgroupParent)
+	g.AddAnnotation(annotations.ParentPodUID, parentUID)
+	g.AddAnnotation(annotations.SubpodCgroupBase, subpodBaseAbs)
 
 	return cgroupParent, nil
+}
+
+func (s *Server) sandboxByKubePodUID(podUID string) *libsandbox.Sandbox {
+	for _, sb := range s.ContainerServer.ListSandboxes() {
+		if sb.Labels()[kubeletTypes.KubernetesPodUIDLabel] == podUID {
+			return sb
+		}
+	}
+
+	return nil
 }
 
 func (s *Server) setupSandboxIDMappings(g *generate.Generator, sandboxIDMappings *idtools.IDMappings) error {
@@ -1311,8 +1389,10 @@ func (s *Server) setupInfraContainer(ctx context.Context, sb *libsandbox.Sandbox
 
 		g.AddAnnotation(v2.Spoofed, "true")
 
-		if err := s.config.CgroupManager().CreateSandboxCgroup(cgroupParent, sboxID); err != nil {
-			return nil, "", fmt.Errorf("create dropped infra %s cgroup: %w", sboxID, err)
+		if !sb.IsSubpod() {
+			if err := s.config.CgroupManager().CreateSandboxCgroup(cgroupParent, sboxID); err != nil {
+				return nil, "", fmt.Errorf("create dropped infra %s cgroup: %w", sboxID, err)
+			}
 		}
 	}
 

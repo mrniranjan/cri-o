@@ -31,6 +31,10 @@ const (
 	// PodLinuxResources indicates the sum of container resources for this pod.
 	PodLinuxResources = "pod-linux-resources.crio.io"
 
+	// ParentPodUID is the Kubernetes pod UID of an existing parent pod; when set, CRI-O may nest
+	// this pod's cgroup under that parent's pod scope (sub-pod cgroup nesting).
+	ParentPodUID = "parent-pod-uid.crio.io"
+
 	// SeccompNotifierAction indicates a container is allowed to use the seccomp notifier feature.
 	SeccompNotifierAction = "seccomp-notifier-action.crio.io"
 
@@ -150,6 +154,11 @@ const (
 	// Deprecated: Use PodLinuxResources instead.
 	V1PodLinuxResources = "io.kubernetes.cri-o.PodLinuxResources"
 
+	// V1ParentPodUID is the deprecated V1 version of ParentPodUID.
+	//
+	// Deprecated: Use ParentPodUID instead.
+	V1ParentPodUID = "io.kubernetes.cri-o.ParentPodUID"
+
 	// V1LinkLogs is the deprecated V1 version of LinkLogs.
 	//
 	// Deprecated: Use LinkLogs instead.
@@ -184,6 +193,7 @@ var reverseAnnotationMigrationMap = map[string]string{
 	PlatformRuntimePath:       V1PlatformRuntimePath,
 	PodLinuxOverhead:          V1PodLinuxOverhead,
 	PodLinuxResources:         V1PodLinuxResources,
+	ParentPodUID:              V1ParentPodUID,
 	SeccompNotifierAction:     V1SeccompNotifierAction,
 	SeccompProfile:            V1SeccompProfile,
 	ShmSize:                   V1ShmSize,
@@ -277,6 +287,7 @@ var AllAnnotations = []string{
 	PlatformRuntimePath,
 	PodLinuxOverhead,
 	PodLinuxResources,
+	ParentPodUID,
 	SeccompNotifierAction,
 	SeccompProfile,
 	ShmSize,
@@ -297,6 +308,7 @@ var AllV1Annotations = []string{
 	V1PlatformRuntimePath,
 	V1PodLinuxOverhead,
 	V1PodLinuxResources,
+	V1ParentPodUID,
 	V1SeccompNotifierAction,
 	V1SeccompProfile,
 	V1ShmSize,

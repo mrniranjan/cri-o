@@ -96,6 +96,14 @@ type CgroupManager interface {
 	//   - containerManagers: a slice of cgroup managers for the container cgroup(s).
 	//     This may include an extra manager if crun creates a sub-cgroup of the container.
 	PodAndContainerCgroupManagers(sbParent, containerID string) (podManager cgroups.Manager, containerManagers []cgroups.Manager, err error)
+	// SubpodSandboxCgroupStats returns cgroup stats for an infra container under a sub-pod base path.
+	SubpodSandboxCgroupStats(subpodBaseAbs, sbID string) (*stats.CgroupStats, error)
+	// ContainerCgroupStatsSubpod returns cgroup stats for a workload container under a sub-pod base path.
+	ContainerCgroupStatsSubpod(subpodBaseAbs, containerID string) (*stats.CgroupStats, error)
+	// RemoveSubpodSandboxCgroup removes the child pod cgroup subtree under a delegated parent (subpods/<id>/crio-<sbID> and subpods/<id>).
+	RemoveSubpodSandboxCgroup(subpodBaseAbs, sbID string) error
+	// ContainerCgroupManagerSubpod returns the cgroup manager for a workload under a sub-pod base path.
+	ContainerCgroupManagerSubpod(subpodBaseAbs, containerID string) (cgroups.Manager, error)
 }
 
 // New creates a new CgroupManager with defaults.

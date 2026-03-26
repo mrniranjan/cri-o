@@ -29,6 +29,7 @@ import (
 	types "k8s.io/cri-api/pkg/apis/runtime/v1"
 	kubeletTypes "k8s.io/kubelet/pkg/types"
 
+	"github.com/cri-o/cri-o/internal/config/cgmgr"
 	"github.com/cri-o/cri-o/internal/config/node"
 	"github.com/cri-o/cri-o/internal/config/rdt"
 	"github.com/cri-o/cri-o/internal/factory/container"
@@ -1616,7 +1617,16 @@ func (s *Server) setupLinuxResources(ctx context.Context, ctr container.Containe
 			}
 		}
 
-		specgen.SetLinuxCgroupsPath(s.config.CgroupManager().ContainerCgroupPath(sb.CgroupParent(), containerID))
+		if sb.IsSubpod() {
+			subpodPath, err := cgmgr.ContainerCgroupPathForSubpodWorkload(sb.SubpodCgroupBase(), containerID)
+			if err != nil {
+				return err
+			}
+
+			specgen.SetLinuxCgroupsPath(subpodPath)
+		} else {
+			specgen.SetLinuxCgroupsPath(s.config.CgroupManager().ContainerCgroupPath(sb.CgroupParent(), containerID))
+		}
 
 		if len(securityContext.GetMaskedPaths()) != 0 {
 			securityContext.MaskedPaths = appendDefaultMaskedPaths(securityContext.GetMaskedPaths())

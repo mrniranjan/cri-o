@@ -427,3 +427,23 @@ func (m *SystemdManager) ExecCgroupManager(cgroupPath string) (cgroups.Manager, 
 
 	return execCgroupManager(containerCgroupAbsPath)
 }
+
+// SubpodSandboxCgroupStats returns cgroup stats for an infra container under a sub-pod base path.
+func (*SystemdManager) SubpodSandboxCgroupStats(subpodBaseAbs, sbID string) (*stats.CgroupStats, error) {
+	return cgroupStatsUnderBase(subpodBaseAbs, sbID)
+}
+
+// ContainerCgroupStatsSubpod returns cgroup stats for a workload container under a sub-pod base path.
+func (*SystemdManager) ContainerCgroupStatsSubpod(subpodBaseAbs, containerID string) (*stats.CgroupStats, error) {
+	return cgroupStatsUnderBase(subpodBaseAbs, containerID)
+}
+
+// RemoveSubpodSandboxCgroup removes the child pod cgroup subtree under a delegated parent.
+func (*SystemdManager) RemoveSubpodSandboxCgroup(subpodBaseAbs, sbID string) error {
+	return removeSubpodCgroupTree(subpodBaseAbs, sbID)
+}
+
+// ContainerCgroupManagerSubpod returns the cgroup manager for a workload under a sub-pod base path.
+func (*SystemdManager) ContainerCgroupManagerSubpod(subpodBaseAbs, containerID string) (cgroups.Manager, error) {
+	return LibctrManager(containerCgroupPath(containerID), subpodBaseAbs, false)
+}

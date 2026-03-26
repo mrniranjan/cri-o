@@ -300,6 +300,13 @@ func (c *ContainerServer) LoadSandbox(ctx context.Context, id string) (sb *sandb
 	sbox.SetContainers(memorystore.New[*oci.Container]())
 	sbox.SetShmPath(m.Annotations[annotations.ShmPath])
 	sbox.SetCgroupParent(m.Annotations[annotations.CgroupParent])
+	if v, ok := m.Annotations[annotations.ParentPodUID]; ok && v != "" {
+		sbox.SetParentPodUID(v)
+	}
+
+	if v, ok := m.Annotations[annotations.SubpodCgroupBase]; ok && v != "" {
+		sbox.SetSubpodCgroupBase(v)
+	}
 	sbox.SetPrivileged(privileged)
 	sbox.SetRuntimeHandler(m.Annotations[annotations.RuntimeHandler])
 	sbox.SetResolvPath(m.Annotations[annotations.ResolvPath])

@@ -82,6 +82,12 @@ type Builder interface {
 	// SetCgroupParent sets the cgroup parent.
 	SetCgroupParent(string)
 
+	// SetParentPodUID sets the Kubernetes parent pod UID for sub-pod cgroup nesting.
+	SetParentPodUID(string)
+
+	// SetSubpodCgroupBase sets the absolute cgroup base path for sub-pod nesting.
+	SetSubpodCgroupBase(string)
+
 	// SetPrivileged sets the privileged.
 	SetPrivileged(bool)
 
@@ -437,6 +443,16 @@ func (b *sandboxBuilder) SetShmPath(shmPath string) {
 func (b *sandboxBuilder) SetCgroupParent(cgroupParent string) {
 	b.validations.setValidation(validationSetCgroupParent)
 	b.sandboxRef.cgroupParent = cgroupParent
+}
+
+// SetParentPodUID sets the Kubernetes parent pod UID for sub-pod cgroup nesting.
+func (b *sandboxBuilder) SetParentPodUID(uid string) {
+	b.sandboxRef.parentPodUID = uid
+}
+
+// SetSubpodCgroupBase sets the absolute cgroup base path for sub-pod nesting.
+func (b *sandboxBuilder) SetSubpodCgroupBase(path string) {
+	b.sandboxRef.subpodCgroupBase = path
 }
 
 // SetPrivileged sets the privileged flag for the sidecar container.

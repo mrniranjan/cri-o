@@ -22,6 +22,12 @@ const (
 	// CgroupParent is the sandbox cgroup parent.
 	CgroupParent = "io.kubernetes.cri-o.CgroupParent"
 
+	// SubpodCgroupBase is the absolute cgroup v2 path to subpods/<childSandboxID> for nested sub-pods.
+	SubpodCgroupBase = "io.kubernetes.cri-o.SubpodCgroupBase"
+
+	// ParentPodUID is the Kubernetes pod UID of the parent pod for sub-pod cgroup nesting.
+	ParentPodUID = "io.kubernetes.cri-o.ParentPodUID"
+
 	// IP is the container ipv4 or ipv6 address.
 	IP = "io.kubernetes.cri-o.IP"
 

@@ -193,6 +193,7 @@ func TestAllAllowedAnnotationsContainsBothVersions(t *testing.T) {
 		{v2.V1Umask, v2.Umask},
 		{v2.V1PodLinuxOverhead, v2.PodLinuxOverhead},
 		{v2.V1PodLinuxResources, v2.PodLinuxResources},
+		{v2.V1ParentPodUID, v2.ParentPodUID},
 		{v2.V1LinkLogs, v2.LinkLogs},
 		{v2.V1PlatformRuntimePath, v2.PlatformRuntimePath},
 		{v2.V1SeccompProfile, v2.SeccompProfile},

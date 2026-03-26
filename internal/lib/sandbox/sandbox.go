@@ -72,6 +72,10 @@ type Sandbox struct {
 	containerEnvPath  string
 	podLinuxOverhead  *types.LinuxContainerResources
 	podLinuxResources *types.LinuxContainerResources
+	// parentPodUID is set when this sandbox nests under another pod's cgroup (sub-pod).
+	parentPodUID string
+	// subpodCgroupBase is the absolute path to .../subpods/<childSandboxID> on the host (cgroup v2).
+	subpodCgroupBase string
 }
 
 // DefaultShmSize is the default shm size.
@@ -218,6 +222,31 @@ func (s *Sandbox) ShmPath() string {
 // CgroupParent returns the cgroup parent of the sandbox.
 func (s *Sandbox) CgroupParent() string {
 	return s.cgroupParent
+}
+
+// ParentPodUID returns the Kubernetes pod UID of the parent pod when this is a sub-pod, or empty.
+func (s *Sandbox) ParentPodUID() string {
+	return s.parentPodUID
+}
+
+// SubpodCgroupBase returns the absolute cgroup path to subpods/<childSandboxID> for a nested sub-pod, or empty.
+func (s *Sandbox) SubpodCgroupBase() string {
+	return s.subpodCgroupBase
+}
+
+// IsSubpod reports whether this sandbox uses sub-pod cgroup nesting.
+func (s *Sandbox) IsSubpod() bool {
+	return s.subpodCgroupBase != ""
+}
+
+// SetParentPodUID sets the parent Kubernetes pod UID (restore and tests).
+func (s *Sandbox) SetParentPodUID(uid string) {
+	s.parentPodUID = uid
+}
+
+// SetSubpodCgroupBase sets the sub-pod cgroup base path (restore and tests).
+func (s *Sandbox) SetSubpodCgroupBase(path string) {
+	s.subpodCgroupBase = path
 }
 
 // Privileged returns whether or not the containers in the sandbox are

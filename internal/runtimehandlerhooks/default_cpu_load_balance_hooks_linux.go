@@ -44,6 +44,10 @@ func (d *DefaultCPULoadBalanceHooks) PostStop(ctx context.Context, c *oci.Contai
 		return nil
 	}
 
+	if s.IsSubpod() {
+		return nil
+	}
+
 	if d.CgroupManager == nil {
 		return errors.New("cgroup manager is nil")
 	}

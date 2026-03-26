@@ -96,6 +96,23 @@ sudo -E ./test/test_runner.sh version.bats  # Single test
 sudo -E ./test/test_runner.sh ctr.bats -f 'pattern'  # Filter
 ```
 
+**Build in a CentOS Stream 9 container (Podman):** Useful when the host lacks
+matching toolchain or dependencies (e.g. btrfs headers). Mount the repo and
+run `make` inside the container:
+
+```bash
+podman run -v ~/source/cri-o/:/cri-o:z --rm -it quay.io/centos/centos:stream9
+
+# inside the container:
+cd /cri-o
+mkdir -p bin
+touch bin/paths
+make
+```
+
+Adjust the host path (`~/source/cri-o`) to match your checkout. Use `:z` for
+SELinux volume labels on Fedora/RHEL hosts; omit if not needed.
+
 **Key Makefile Targets:** `make help` for full list
 
 - `make` / `make all` - Build binaries and docs

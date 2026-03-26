@@ -72,6 +72,21 @@ func (mr *MockCgroupManagerMockRecorder) ContainerCgroupManager(sbParent, contai
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ContainerCgroupManager", reflect.TypeOf((*MockCgroupManager)(nil).ContainerCgroupManager), sbParent, containerID)
 }
 
+// ContainerCgroupManagerSubpod mocks base method.
+func (m *MockCgroupManager) ContainerCgroupManagerSubpod(subpodBaseAbs, containerID string) (cgroups.Manager, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ContainerCgroupManagerSubpod", subpodBaseAbs, containerID)
+	ret0, _ := ret[0].(cgroups.Manager)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ContainerCgroupManagerSubpod indicates an expected call of ContainerCgroupManagerSubpod.
+func (mr *MockCgroupManagerMockRecorder) ContainerCgroupManagerSubpod(subpodBaseAbs, containerID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ContainerCgroupManagerSubpod", reflect.TypeOf((*MockCgroupManager)(nil).ContainerCgroupManagerSubpod), subpodBaseAbs, containerID)
+}
+
 // ContainerCgroupPath mocks base method.
 func (m *MockCgroupManager) ContainerCgroupPath(arg0, arg1 string) string {
 	m.ctrl.T.Helper()
@@ -99,6 +114,21 @@ func (m *MockCgroupManager) ContainerCgroupStats(sbParent, containerID string) (
 func (mr *MockCgroupManagerMockRecorder) ContainerCgroupStats(sbParent, containerID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ContainerCgroupStats", reflect.TypeOf((*MockCgroupManager)(nil).ContainerCgroupStats), sbParent, containerID)
+}
+
+// ContainerCgroupStatsSubpod mocks base method.
+func (m *MockCgroupManager) ContainerCgroupStatsSubpod(subpodBaseAbs, containerID string) (*stats.CgroupStats, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ContainerCgroupStatsSubpod", subpodBaseAbs, containerID)
+	ret0, _ := ret[0].(*stats.CgroupStats)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ContainerCgroupStatsSubpod indicates an expected call of ContainerCgroupStatsSubpod.
+func (mr *MockCgroupManagerMockRecorder) ContainerCgroupStatsSubpod(subpodBaseAbs, containerID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ContainerCgroupStatsSubpod", reflect.TypeOf((*MockCgroupManager)(nil).ContainerCgroupStatsSubpod), subpodBaseAbs, containerID)
 }
 
 // CreateSandboxCgroup mocks base method.
@@ -227,6 +257,20 @@ func (mr *MockCgroupManagerMockRecorder) RemoveSandboxCgroup(sbParent, container
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RemoveSandboxCgroup", reflect.TypeOf((*MockCgroupManager)(nil).RemoveSandboxCgroup), sbParent, containerID)
 }
 
+// RemoveSubpodSandboxCgroup mocks base method.
+func (m *MockCgroupManager) RemoveSubpodSandboxCgroup(subpodBaseAbs, sbID string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RemoveSubpodSandboxCgroup", subpodBaseAbs, sbID)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// RemoveSubpodSandboxCgroup indicates an expected call of RemoveSubpodSandboxCgroup.
+func (mr *MockCgroupManagerMockRecorder) RemoveSubpodSandboxCgroup(subpodBaseAbs, sbID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RemoveSubpodSandboxCgroup", reflect.TypeOf((*MockCgroupManager)(nil).RemoveSubpodSandboxCgroup), subpodBaseAbs, sbID)
+}
+
 // SandboxCgroupManager mocks base method.
 func (m *MockCgroupManager) SandboxCgroupManager(sbParent, sbID string) (cgroups.Manager, error) {
 	m.ctrl.T.Helper()
@@ -271,4 +315,19 @@ func (m *MockCgroupManager) SandboxCgroupStats(sbParent, sbID string) (*stats.Cg
 func (mr *MockCgroupManagerMockRecorder) SandboxCgroupStats(sbParent, sbID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SandboxCgroupStats", reflect.TypeOf((*MockCgroupManager)(nil).SandboxCgroupStats), sbParent, sbID)
+}
+
+// SubpodSandboxCgroupStats mocks base method.
+func (m *MockCgroupManager) SubpodSandboxCgroupStats(subpodBaseAbs, sbID string) (*stats.CgroupStats, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SubpodSandboxCgroupStats", subpodBaseAbs, sbID)
+	ret0, _ := ret[0].(*stats.CgroupStats)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// SubpodSandboxCgroupStats indicates an expected call of SubpodSandboxCgroupStats.
+func (mr *MockCgroupManagerMockRecorder) SubpodSandboxCgroupStats(subpodBaseAbs, sbID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SubpodSandboxCgroupStats", reflect.TypeOf((*MockCgroupManager)(nil).SubpodSandboxCgroupStats), subpodBaseAbs, sbID)
 }

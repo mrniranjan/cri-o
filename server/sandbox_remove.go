@@ -67,7 +67,11 @@ func (s *Server) removePodSandbox(ctx context.Context, sb *sandbox.Sandbox) erro
 		return err
 	}
 
-	if sb.InfraContainer().Spoofed() {
+	if sb.IsSubpod() {
+		if err := s.config.CgroupManager().RemoveSubpodSandboxCgroup(sb.SubpodCgroupBase(), sb.ID()); err != nil {
+			return err
+		}
+	} else if sb.InfraContainer().Spoofed() {
 		if err := s.config.CgroupManager().RemoveSandboxCgroup(sb.CgroupParent(), sb.ID()); err != nil {
 			return err
 		}

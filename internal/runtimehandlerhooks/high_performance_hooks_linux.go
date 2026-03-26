@@ -236,6 +236,12 @@ func (h *HighPerformanceHooks) PreStart(ctx context.Context, c *oci.Container, s
 		return nil
 	}
 
+	if s.IsSubpod() {
+		log.Warnf(ctx, "Skipping high-performance cgroup hooks for sub-pod sandbox %s", s.ID())
+
+		return nil
+	}
+
 	podManager, containerManagers, err := h.PodAndContainerCgroupManagers(s.CgroupParent(), c.ID())
 	if err != nil {
 		return err
@@ -379,6 +385,12 @@ func (h *HighPerformanceHooks) PreStop(ctx context.Context, c *oci.Container, s 
 
 	cSpec := c.Spec()
 	if !shouldRunHooks(ctx, c.ID(), &cSpec, s) {
+		return nil
+	}
+
+	if s.IsSubpod() {
+		log.Warnf(ctx, "Skipping high-performance cgroup hooks for sub-pod sandbox %s", s.ID())
+
 		return nil
 	}
 

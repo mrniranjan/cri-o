@@ -51,8 +51,18 @@ func (ss *StatsServer) updateSandbox(sb *sandbox.Sandbox) *types.PodSandboxStats
 		sandboxMetrics.metric.Metrics = podMetrics
 	}
 
-	if cgstats, err := ss.Config().CgroupManager().SandboxCgroupStats(sb.CgroupParent(), sb.ID()); err != nil {
-		log.Errorf(ss.ctx, "Error getting sandbox stats %s: %v", sb.ID(), err)
+	var cgstats *stats.CgroupStats
+
+	var cgErr error
+
+	if sb.IsSubpod() {
+		cgstats, cgErr = ss.Config().CgroupManager().SubpodSandboxCgroupStats(sb.SubpodCgroupBase(), sb.ID())
+	} else {
+		cgstats, cgErr = ss.Config().CgroupManager().SandboxCgroupStats(sb.CgroupParent(), sb.ID())
+	}
+
+	if cgErr != nil {
+		log.Errorf(ss.ctx, "Error getting sandbox stats %s: %v", sb.ID(), cgErr)
 	} else {
 		sandboxStats.Linux.Cpu = criCPUStats(&cgstats.CpuStats, cgstats.SystemNano)
 		sandboxStats.Linux.Memory = criMemStats(&cgstats.MemoryStats, cgstats.SystemNano)
@@ -72,7 +82,16 @@ func (ss *StatsServer) updateSandbox(sb *sandbox.Sandbox) *types.PodSandboxStats
 			continue
 		}
 
-		ctrStats, err := ss.Runtime().ContainerStats(ss.ctx, c, sb.CgroupParent())
+		var ctrStats *stats.CgroupStats
+
+		var err error
+
+		if sb.IsSubpod() {
+			ctrStats, err = ss.Config().CgroupManager().ContainerCgroupStatsSubpod(sb.SubpodCgroupBase(), c.ID())
+		} else {
+			ctrStats, err = ss.Runtime().ContainerStats(ss.ctx, c, sb.CgroupParent())
+		}
+
 		if err != nil {
 			log.Errorf(ss.ctx, "Error getting container stats %s: %v", c.ID(), err)
 		}
@@ -121,7 +140,16 @@ func (ss *StatsServer) updateContainerStats(c *oci.Container, sb *sandbox.Sandbo
 		return nil
 	}
 
-	ctrStats, err := ss.Runtime().ContainerStats(ss.ctx, c, sb.CgroupParent())
+	var ctrStats *stats.CgroupStats
+
+	var err error
+
+	if sb.IsSubpod() {
+		ctrStats, err = ss.Config().CgroupManager().ContainerCgroupStatsSubpod(sb.SubpodCgroupBase(), c.ID())
+	} else {
+		ctrStats, err = ss.Runtime().ContainerStats(ss.ctx, c, sb.CgroupParent())
+	}
+
 	if err != nil {
 		log.Errorf(ss.ctx, "Error getting container stats %s: %v", c.ID(), err)
 
@@ -236,7 +264,16 @@ func (ss *StatsServer) updatePodSandboxMetrics(sb *sandbox.Sandbox) *SandboxMetr
 // containers by collecting metrics from the cgroup based on the included pod metrics,
 // except for network metrics, which are collected at the pod level.
 func (ss *StatsServer) GenerateSandboxContainerMetrics(sb *sandbox.Sandbox, c *oci.Container, sm *SandboxMetrics) *types.ContainerMetrics {
-	ctrStats, err := ss.Runtime().ContainerStats(ss.ctx, c, sb.CgroupParent())
+	var ctrStats *stats.CgroupStats
+
+	var err error
+
+	if sb.IsSubpod() {
+		ctrStats, err = ss.Config().CgroupManager().ContainerCgroupStatsSubpod(sb.SubpodCgroupBase(), c.ID())
+	} else {
+		ctrStats, err = ss.Runtime().ContainerStats(ss.ctx, c, sb.CgroupParent())
+	}
+
 	if err != nil || ctrStats == nil {
 		log.Errorf(ss.ctx, "Error getting sandbox stats %s: %v", sb.ID(), err)
 
@@ -287,7 +324,16 @@ func (ss *StatsServer) containerMetricsFromContainerStats(sb *sandbox.Sandbox, c
 				metrics = append(metrics, memoryMetrics...)
 			}
 		case config.OOMMetrics:
-			cm, err := ss.Config().CgroupManager().ContainerCgroupManager(sb.CgroupParent(), c.ID())
+			var cm cgroups.Manager
+
+			var err error
+
+			if sb.IsSubpod() {
+				cm, err = ss.Config().CgroupManager().ContainerCgroupManagerSubpod(sb.SubpodCgroupBase(), c.ID())
+			} else {
+				cm, err = ss.Config().CgroupManager().ContainerCgroupManager(sb.CgroupParent(), c.ID())
+			}
+
 			if err != nil {
 				log.Errorf(ss.ctx, "Unable to fetch cgroup manager for container %s: %v", c.ID(), err)
 
