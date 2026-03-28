@@ -15,11 +15,18 @@
   - [How CRI-O Constructs cgroupsPath](#how-cri-o-constructs-cgroupspath)
   - [The systemd-cgroup Flag Flow](#the-systemd-cgroup-flag-flow)
   - [End-to-End Flow Diagram](#end-to-end-flow-diagram)
+  - [Slice Name Encoding](#slice-name-encoding)
+  - [How CRI-O Constructs Cgroup Paths](#how-cri-o-constructs-cgroup-paths)
+  - [Directory Tree on Disk (Systemd + cgroup v2)](#directory-tree-on-disk-systemd--cgroup-v2)
+  - [Directory Tree on Disk (Cgroupfs)](#directory-tree-on-disk-cgroupfs)
+  - [The <code>container/</code> Sub-Cgroup (crun-specific)](#the-container-sub-cgroup-crun-specific)
+  - [Conmon's Cgroup Placement](#conmons-cgroup-placement)
+  - [Naming Convention Summary](#naming-convention-summary)
   <!-- /toc -->
 
 ## Overview
 
-This document covers four related topics:
+This document covers five related topics:
 
 1. A fix in crun to handle explicit filesystem-style cgroup paths when the
    systemd cgroup manager is enabled, required for placing pods under a
@@ -29,6 +36,8 @@ This document covers four related topics:
 3. How crun uses eBPF programs for cgroup v2 device access control.
 4. The communication path from CRI-O through conmon to crun, and how
    cgroup configuration flows through the OCI spec.
+5. Systemd cgroup concepts (`.slice`, `.scope`) and how the pod cgroup
+   directory structure is organized on disk.
 
 ---
 
@@ -648,3 +657,195 @@ This shows the complete path from kubelet to cgroup creation:
                               │
 10. Crun creates container    │  via OCI runtime create
 ```
+
+---
+
+## Systemd Cgroup Concepts and Pod Directory Structure
+
+### Systemd Unit Types for Cgroups
+
+Systemd uses two unit types to organize cgroups:
+
+**`.slice`** -- A grouping unit that creates a node in the cgroup
+hierarchy. Slices do not run processes themselves; they exist to organize
+other units into a tree. Slices can be nested, and a child slice's name
+encodes the full hierarchy using `-` as a separator.
+
+**`.scope`** -- An execution unit that wraps externally-started processes
+(unlike `.service`, which systemd starts itself). CRI-O uses scopes for
+containers because the container processes are started by crun/conmon, not
+by systemd. Scopes live under slices.
+
+| Unit type | Purpose                      | Example                     |
+| --------- | ---------------------------- | --------------------------- |
+| `.slice`  | Grouping / resource boundary | `kubepods-burstable.slice`  |
+| `.scope`  | Wraps a running process tree | `crio-<container-id>.scope` |
+
+### Slice Name Encoding
+
+The `-` character in systemd slice names encodes hierarchy depth. Each
+segment between dashes represents one level in the cgroup tree:
+
+| Slice name                        | Meaning                         | Parent                     |
+| --------------------------------- | ------------------------------- | -------------------------- |
+| `kubepods.slice`                  | Top-level Kubernetes cgroup     | `-.slice` (root)           |
+| `kubepods-burstable.slice`        | `burstable` child of `kubepods` | `kubepods.slice`           |
+| `kubepods-burstable-podABC.slice` | Pod `ABC` under `burstable`     | `kubepods-burstable.slice` |
+
+CRI-O (and the kubelet) use `systemd.ExpandSlice()` to convert a slice
+name into its filesystem path:
+
+| Slice name                        | `ExpandSlice` result                                                       |
+| --------------------------------- | -------------------------------------------------------------------------- |
+| `kubepods.slice`                  | `/kubepods.slice`                                                          |
+| `kubepods-burstable.slice`        | `/kubepods.slice/kubepods-burstable.slice`                                 |
+| `kubepods-burstable-podABC.slice` | `/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-podABC.slice` |
+
+### How CRI-O Constructs Cgroup Paths
+
+CRI-O uses the `CrioPrefix` constant (`"crio"`) defined in
+`internal/config/cgmgr/cgmgr_linux.go` to build container cgroup names:
+
+```go
+func containerCgroupPath(id string) string {
+    return CrioPrefix + "-" + id    // "crio-<id>"
+}
+```
+
+**Systemd manager** -- The OCI spec `linux.cgroupsPath` is set to a
+systemd triple `slice:prefix:id`:
+
+```go
+// ContainerCgroupPath returns e.g.:
+// "kubepods-burstable-podABC.slice:crio:container-123"
+func (*SystemdManager) ContainerCgroupPath(sbParent, containerID string) string {
+    return parent + ":" + CrioPrefix + ":" + containerID
+}
+```
+
+To get the absolute path on disk, CRI-O expands the slice and appends
+the scope name (`internal/config/cgmgr/systemd_linux.go`):
+
+```go
+func (m *SystemdManager) ContainerCgroupAbsolutePath(sbParent, containerID string) (string, error) {
+    cgroup, err := systemd.ExpandSlice(parent)
+    // ...
+    return filepath.Join(cgroup, containerCgroupPath(containerID)+".scope"), nil
+}
+```
+
+For example, with `sbParent = "kubepods-burstable-podABC.slice"` and
+`containerID = "def456"`:
+
+- Triple: `kubepods-burstable-podABC.slice:crio:def456`
+- Absolute path: `/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-podABC.slice/crio-def456.scope`
+
+**Cgroupfs manager** -- Paths are simple filesystem paths without `.slice`
+or `.scope` suffixes:
+
+```go
+func (*CgroupfsManager) ContainerCgroupPath(sbParent, containerID string) string {
+    return filepath.Join("/", parent, containerCgroupPath(containerID))
+}
+// Result: "/kubepods/burstable/pod-ABC/crio-def456"
+```
+
+### Directory Tree on Disk (Systemd + cgroup v2)
+
+```
+/sys/fs/cgroup/
+└── kubepods.slice/                                        ← kubelet top-level slice
+    ├── kubepods-besteffort.slice/                          ← BestEffort QoS class
+    │   └── kubepods-besteffort-pod<UID>.slice/             ← pod slice
+    │       ├── crio-<INFRA_ID>.scope/                     ← infra (pause) container
+    │       │   └── container/                             ← crun child cgroup
+    │       ├── crio-<CTR_1>.scope/                        ← workload container 1
+    │       │   └── container/
+    │       └── crio-<CTR_2>.scope/                        ← workload container 2
+    │           └── container/
+    ├── kubepods-burstable.slice/                           ← Burstable QoS class
+    │   └── kubepods-burstable-pod<UID>.slice/
+    │       ├── crio-<INFRA_ID>.scope/
+    │       │   └── container/
+    │       └── crio-<CTR_ID>.scope/
+    │           └── container/
+    └── kubepods-pod<UID>.slice/                            ← Guaranteed QoS (no QoS sub-slice)
+        ├── crio-<INFRA_ID>.scope/
+        │   └── container/
+        └── crio-<CTR_ID>.scope/
+            └── container/
+```
+
+| Directory                           | Created by               | Type      | Purpose                                       |
+| ----------------------------------- | ------------------------ | --------- | --------------------------------------------- |
+| `kubepods.slice`                    | Kubelet                  | slice     | Top-level Kubernetes resource boundary        |
+| `kubepods-burstable.slice`          | Kubelet                  | slice     | QoS class grouping                            |
+| `kubepods-burstable-pod<UID>.slice` | Kubelet                  | slice     | Per-pod resource limits (CPU, memory)         |
+| `crio-<ID>.scope`                   | crun (via systemd D-Bus) | scope     | Per-container cgroup                          |
+| `container/`                        | crun                     | directory | Child cgroup for the actual container process |
+
+### Directory Tree on Disk (Cgroupfs)
+
+```
+/sys/fs/cgroup/
+└── kubepods/                                              ← kubelet top-level
+    ├── besteffort/                                        ← BestEffort QoS class
+    │   └── pod-<UID>/                                     ← pod directory
+    │       ├── crio-<INFRA_ID>/                           ← infra container
+    │       └── crio-<CTR_ID>/                             ← workload container
+    ├── burstable/                                         ← Burstable QoS class
+    │   └── pod-<UID>/
+    │       └── crio-<CTR_ID>/
+    └── pod-<UID>/                                         ← Guaranteed QoS
+        └── crio-<CTR_ID>/
+```
+
+### The `container/` Sub-Cgroup (crun-specific)
+
+Crun creates an additional `container/` child directory inside each
+scope. This exists because systemd enforces a **single-owner rule**: only
+the unit manager (systemd) should write to cgroup control files in a scope
+it manages. By creating a child cgroup and placing the container process
+there, crun avoids conflicting with systemd's cgroup management.
+
+CRI-O accounts for this in `crunContainerCgroupManager()`
+(`internal/config/cgmgr/cgmgr_linux.go`):
+
+```go
+func crunContainerCgroupManager(expectedContainerCgroup string) (cgroups.Manager, error) {
+    actualContainerCgroup := filepath.Join(expectedContainerCgroup, "container")
+    // Check if the "container" child cgroup exists
+    // If it does, return a cgroup manager for it
+    // ...
+}
+```
+
+This is relevant for stats collection: CRI-O must read resource usage from
+the `container/` child (where the process actually runs), not from the
+parent scope (which systemd owns). The `PodAndContainerCgroupManagers()`
+method returns managers for both levels.
+
+### Conmon's Cgroup Placement
+
+Conmon (the container monitor) is placed in a separate scope under the
+same pod slice. CRI-O creates a transient systemd scope named
+`crio-conmon-<container-id>.scope` via D-Bus:
+
+```go
+conmonUnitName := fmt.Sprintf("crio-conmon-%s.scope", cid)
+```
+
+This keeps conmon's resource usage accounted separately from the container
+it monitors, while still under the pod's resource limits.
+
+### Naming Convention Summary
+
+| Component            | Systemd name                        | On-disk path (under `/sys/fs/cgroup/`)                          |
+| -------------------- | ----------------------------------- | --------------------------------------------------------------- |
+| K8s top-level        | `kubepods.slice`                    | `kubepods.slice/`                                               |
+| QoS class            | `kubepods-burstable.slice`          | `kubepods.slice/kubepods-burstable.slice/`                      |
+| Pod                  | `kubepods-burstable-pod<UID>.slice` | `.../kubepods-burstable-pod<UID>.slice/`                        |
+| Container (OCI spec) | `<pod-slice>:crio:<ID>`             | -- (triple, not a path)                                         |
+| Container (on disk)  | `crio-<ID>.scope`                   | `.../kubepods-burstable-pod<UID>.slice/crio-<ID>.scope/`        |
+| crun child           | --                                  | `.../crio-<ID>.scope/container/`                                |
+| Conmon               | `crio-conmon-<ID>.scope`            | `.../kubepods-burstable-pod<UID>.slice/crio-conmon-<ID>.scope/` |
