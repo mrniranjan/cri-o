@@ -1,6 +1,7 @@
 # Crun Cgroup Path Fix and CRI-O Integration
 
 <!-- toc -->
+
 - [Overview](#overview)
 - [Cgroup Path Detection Logic](#cgroup-path-detection-logic)
   - [Path Classification Rules](#path-classification-rules)
@@ -14,7 +15,7 @@
   - [How CRI-O Constructs cgroupsPath](#how-cri-o-constructs-cgroupspath)
   - [The systemd-cgroup Flag Flow](#the-systemd-cgroup-flag-flow)
   - [End-to-End Flow Diagram](#end-to-end-flow-diagram)
-<!-- /toc -->
+  <!-- /toc -->
 
 ## Overview
 
@@ -178,11 +179,61 @@ The detection runs at three points to ensure consistent behavior:
 
 ### Why BPF Is Needed
 
-On cgroup v2 (unified hierarchy), the legacy `devices.allow` and
-`devices.deny` files from cgroup v1 do not exist. Instead, device access
-control is enforced via **eBPF programs** of type
-`BPF_PROG_TYPE_CGROUP_DEVICE` attached to a cgroup with attach type
-`BPF_CGROUP_DEVICE`. The kernel calls these programs on every device
+**The cgroup v1 approach (no BPF):**
+
+On cgroup v1, device access control was handled by the kernel's built-in
+**devices controller** via two pseudo-files:
+
+- `devices.allow` -- whitelist a device (e.g. `c 1:3 rwm` for `/dev/null`)
+- `devices.deny` -- blacklist a device (e.g. `a *:* rwm` to deny all)
+
+The kernel maintained an internal allow/deny list and enforced it on
+every `mknod`, `open`, or other device access syscall. This was simple
+but inflexible -- the rule format was fixed, and the kernel had to
+maintain per-cgroup linked lists that could not be extended with custom
+logic.
+
+**Why cgroup v2 dropped the devices controller:**
+
+Cgroup v2 (unified hierarchy) removed the `devices.allow`/`devices.deny`
+files entirely. The kernel developers chose to replace the built-in
+device controller with a programmable eBPF-based mechanism for several
+reasons:
+
+1. **Flexibility** -- BPF programs can express complex access policies
+   that the fixed allow/deny format could not (e.g. conditional rules
+   based on device type AND access mode AND major/minor combinations in
+   a single atomic program).
+
+2. **Atomicity** -- A BPF program is loaded and attached as a single
+   unit. With cgroup v1, writing multiple rules to `devices.allow` was
+   not atomic -- there was a window between writes where the policy was
+   incomplete. BPF eliminates this race.
+
+3. **Performance** -- BPF programs run as JIT-compiled native code in
+   the kernel. The v1 devices controller walked a linked list on every
+   access check. BPF programs are verified at load time and execute as
+   straight-line code with predictable performance.
+
+4. **Hierarchical attachment** -- BPF programs can be attached at
+   multiple levels of the cgroup hierarchy with `BPF_F_ALLOW_MULTI`.
+   A parent cgroup's device policy is enforced alongside child policies,
+   enabling layered security without duplicating rules.
+
+5. **Atomic updates** -- The `BPF_F_REPLACE` flag allows atomically
+   swapping an attached BPF program with a new one, so device policy
+   updates never leave a window with no enforcement.
+
+**What crun must do:**
+
+Since cgroup v2 provides no file-based device control interface, crun
+must translate the OCI spec's device rules (`linux.resources.devices`)
+into a BPF program and attach it to the container's cgroup. This is not
+optional -- without the BPF program, a cgroup v2 container would have
+**unrestricted device access**.
+
+The BPF program type is `BPF_PROG_TYPE_CGROUP_DEVICE`, attached with
+type `BPF_CGROUP_DEVICE`. The kernel calls this program on every device
 access attempt, and the program returns allow (1) or deny (0).
 
 ### BPF Program Construction
@@ -428,14 +479,45 @@ crun --root /run/crio/crun --systemd-cgroup exec <container-id> -- <cmd>
 
 ### The OCI Spec: config.json
 
-The OCI runtime spec (`config.json`) is the primary interface between
-CRI-O and crun for container configuration. CRI-O writes this file to
-the bundle directory before invoking conmon/crun. Crun reads it via
-`libcrun_container_load_from_file()`:
+The `config.json` file (OCI runtime spec) is **created by CRI-O** and
+**consumed by crun**. Crun never writes or modifies this file.
+
+**CRI-O builds the spec in memory** using the container factory
+(`internal/factory/container/`). During `CreateContainer`, it calls
+methods like `SpecAddMount`, `SpecSetProcessArgs`, `SpecAddDevices`,
+`SpecSetLinuxContainerResources`, and `SpecAddNamespaces` to assemble
+the full spec from the CRI request and image configuration.
+
+**CRI-O writes the spec to two locations** per container
+(`server/container_create.go`):
+
+```go
+specgen.SaveToFile(filepath.Join(containerInfo.Dir, "config.json"), saveOptions)
+specgen.SaveToFile(filepath.Join(containerInfo.RunDir, "config.json"), saveOptions)
+```
+
+| Location               | Purpose                                                           |
+| ---------------------- | ----------------------------------------------------------------- |
+| `containerInfo.Dir`    | Persistent directory -- survives reboots, used for state recovery |
+| `containerInfo.RunDir` | Volatile runtime directory -- the OCI bundle that crun reads      |
+
+The same dual-save pattern applies to sandbox infra containers in
+`server/sandbox_run_linux.go`.
+
+**Crun reads the spec** from the bundle directory (passed by conmon via
+`-b`) using `libcrun_container_load_from_file()`:
 
 ```c
 container_def = runtime_spec_schema_config_schema_parse_file (path, NULL, &oci_error);
 ```
+
+| Step                | Component  | Action                                                                                |
+| ------------------- | ---------- | ------------------------------------------------------------------------------------- |
+| Build OCI spec      | **CRI-O**  | Container factory assembles mounts, devices, namespaces, resources, security profiles |
+| Write `config.json` | **CRI-O**  | `specgen.SaveToFile()` to persistent and runtime directories                          |
+| Pass bundle path    | **conmon** | `conmon -b /run/containers/storage/.../bundle`                                        |
+| Parse `config.json` | **crun**   | `runtime_spec_schema_config_schema_parse_file()`                                      |
+| Execute the spec    | **crun**   | Creates cgroups, namespaces, mounts, starts container process                         |
 
 The cgroup path is at `linux.cgroupsPath` in the JSON, which maps to
 `def->linux->cgroups_path` in crun's C struct. The cgroup resource limits
