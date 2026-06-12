@@ -3,11 +3,13 @@
 <!-- toc -->
 
 - [How CRI-O picks the runtime](#how-cri-o-picks-the-runtime)
+- [Dropped infra containers (drop_infra_ctr)](#dropped-infra-containers-drop_infra_ctr)
 - [Best methods (ranked)](#best-methods-ranked)
-  - [1. CRI-O introspection API (recommended for live nodes)](#1-cri-o-introspection-api-recommended-for-live-nodes)
-  - [2. Map handler name to crun/runc binary](#2-map-handler-name-to-crunrunc-binary)
-  - [3. Kubernetes API (no CRI-O socket needed)](#3-kubernetes-api-no-cri-o-socket-needed)
-  - [4. Offline / direct filesystem (no daemon, no conmon)](#4-offline--direct-filesystem-no-daemon-no-conmon)
+  - [1. CRI-O HTTP / CLI inspect (any container in the pod)](#1-cri-o-http--cli-inspect-any-container-in-the-pod)
+  - [2. Workload container: direct runtime path](#2-workload-container-direct-runtime-path)
+  - [3. Node config: map handler to binary](#3-node-config-map-handler-to-binary)
+  - [4. Sandbox config.json on disk](#4-sandbox-configjson-on-disk)
+  - [5. Kubernetes API (no CRI-O socket)](#5-kubernetes-api-no-cri-o-socket)
 - [What not to use (and why)](#what-not-to-use-and-why)
 - [Practical decision tree](#practical-decision-tree)
 - [Summary](#summary)
@@ -57,53 +59,94 @@ Key code paths:
 **Important:** crun vs runc is the **`runtime_path` for the handler**, not
 something you infer from the workload PID or cgroup layout.
 
-## Best methods (ranked)
+## Dropped infra containers (drop_infra_ctr)
 
-### 1. CRI-O introspection API (recommended for live nodes)
+Most current clusters (including OpenShift) run with `drop_infra_ctr = true`
+in `crio.conf`. When the infra (pause/POD) container is dropped, CRI-O still
+creates a **spoofed** POD entry for sandbox metadata, but it does not run a real
+pause container.
 
-Use the sandbox (pause/infra) container ID — in CRI-O this is typically the
-**same as the pod sandbox ID**.
+Spoofed POD containers look like this in the HTTP inspect API:
 
-```bash
-# Per-pod handler name
-curl --unix-socket /var/run/crio/crio.sock \
-  http://localhost/containers/<sandbox-id> | jq .
-
-# Or CLI equivalent
-crio status containers -i <sandbox-id>
+```json
+{
+  "name": "k8s_POD_...",
+  "annotations": { "io.kubernetes.cri-o.Spoofed": "true" },
+  "crio_annotations": null
+}
 ```
 
-Look in **Crio annotations** for:
+`crio_annotations` is empty for spoofed containers because they never received a
+full OCI spec in memory. The runtime handler is still stored on the **sandbox**
+object and in the on-disk `userdata/config.json`.
 
-`io.kubernetes.cri-o.RuntimeHandler`
+Do **not** expect `io.kubernetes.cri-o.RuntimeHandler` in `crio_annotations` on
+the POD/sandbox ID. Use the methods below instead.
 
-- Empty value means the node **default** handler (see step 2).
-- Non-empty value is the handler key (e.g. `crun`, `runc`).
+## Best methods (ranked)
 
-This is written to the sandbox OCI spec in `setupSandboxAnnotations` and
-restored on reboot via `LoadSandbox` in
-[`internal/lib/container_server.go`](../internal/lib/container_server.go).
+### 1. CRI-O HTTP / CLI inspect (any container in the pod)
 
-**Note:** Workload container IDs also work for sandbox lookup (`sandbox:` field
-in output), but the handler annotation lives on the **infra/sandbox** spec —
-query the sandbox ID for the cleanest result.
-
-### 2. Map handler name to crun/runc binary
+The HTTP inspect endpoint returns `runtime_handler` from the pod sandbox for
+**any** container ID in that pod (POD, workload, or sandbox ID).
 
 ```bash
-# Full runtime table + default
-curl --unix-socket /var/run/crio/crio.sock http://localhost/config
+# POD/sandbox ID or any workload container ID in the pod
+curl --unix-socket /var/run/crio/crio.sock \
+  http://localhost/containers/<container-id> | jq -r .runtime_handler
 
-# Or
+# Or CLI equivalent
+crio status containers -i <container-id>
+# prints: runtime handler: crun   (or empty = node default)
+```
+
+Example (spoofed POD container — handler comes from sandbox, not crio_annotations):
+
+```bash
+curl --unix-socket /var/run/crio/crio.sock \
+  http://localhost/containers/9a080184a4b62... | jq '{runtime_handler, annotations}'
+```
+
+If `runtime_handler` is empty, the pod uses the node `default_runtime` (see
+step 3).
+
+### 2. Workload container: direct runtime path
+
+For **non-spoofed workload containers**, `crio_annotations` includes the resolved
+OCI runtime binary path. This skips the handler-to-config lookup.
+
+```bash
+# List workload containers (exclude POD)
+crictl ps --pod <sandbox-id> --name table
+
+curl --unix-socket /var/run/crio/crio.sock \
+  http://localhost/containers/<workload-container-id> | \
+  jq -r '.crio_annotations["platform-runtime-path.crio.io"] // .crio_annotations["io.kubernetes.cri-o.PlatformRuntimePath"]'
+```
+
+Returns e.g. `/usr/bin/crun` or `/usr/bin/runc` directly.
+
+This does not apply to the spoofed POD container itself (step 1 or 4 instead).
+
+### 3. Node config: map handler to binary
+
+Once you have the handler name (from step 1, 4, or Kubernetes), resolve it
+against the node configuration:
+
+```bash
+# Full runtime table + default (TOML)
 crio status config
 
-# Or CRI verbose status (used in CI)
+# Or same via HTTP
+curl --unix-socket /var/run/crio/crio.sock http://localhost/config
+
+# Or CRI status (JSON, used in CI)
 crictl info -o json | jq '.config.crio.DefaultRuntime, .config.crio.Runtimes'
 ```
 
 From config, read:
 
-- `default_runtime` — used when handler is empty (common case on clusters
+- `default_runtime` — used when `runtime_handler` is empty (common on clusters
   without RuntimeClass).
 - `Runtimes.<handler>.runtime_path` — actual binary (`/usr/bin/crun`,
   `/usr/bin/runc`, etc.).
@@ -111,9 +154,29 @@ From config, read:
 Fedora/RHEL packaging often sets `default_runtime = "crun"`; older configs may
 use `runc` ([crio.conf.5.md](crio.conf.5.md) documents `default_runtime="crun"`).
 
-### 3. Kubernetes API (no CRI-O socket needed)
+**Example:** empty `runtime_handler` + `default_runtime = "crun"` → pod uses
+`/usr/bin/crun` from `Runtimes.crun.runtime_path`.
 
-If you know the pod:
+### 4. Sandbox config.json on disk
+
+Works without the CRI-O socket and for spoofed pods. The sandbox OCI spec is
+written at pod creation (even when infra is dropped):
+
+```bash
+jq -r '.annotations["io.kubernetes.cri-o.RuntimeHandler"]' \
+  /var/lib/containers/storage/containers/<sandbox-id>/userdata/config.json
+```
+
+(Exact storage root may vary with `storage.conf`; `userdata/config.json` under
+the sandbox container directory is authoritative per `LoadSandbox` in
+[`internal/lib/container_server.go`](../internal/lib/container_server.go).)
+
+Combine with `crio status config` or `grep` in `/etc/crio/crio.conf` to map the
+handler to `runtime_path`.
+
+### 5. Kubernetes API (no CRI-O socket)
+
+If you know the pod but not the container ID:
 
 ```bash
 kubectl get pod <pod> -o jsonpath='{.spec.runtimeClassName}{"\n"}'
@@ -123,31 +186,15 @@ kubectl get runtimeclass <name> -o jsonpath='{.handler}{"\n"}'
 Then map `.handler` to `runtime_path` in `crio.conf` on the node. If
 `runtimeClassName` is unset, the pod uses CRI-O's `default_runtime`.
 
-### 4. Offline / direct filesystem (no daemon, no conmon)
-
-Sandbox metadata is persisted in container storage. On restore, CRI-O reads:
-
-```bash
-jq -r '.annotations["io.kubernetes.cri-o.RuntimeHandler"]' \
-  /var/lib/containers/storage/containers/<sandbox-id>/userdata/config.json
-```
-
-(Exact storage path may vary with `storage.conf`; the `userdata/config.json`
-OCI spec is the authoritative on-disk copy per `LoadSandbox` in
-[`internal/lib/container_server.go`](../internal/lib/container_server.go).)
-
-Combine with `grep -A5 '\[crio.runtime.runtimes.crun\]' /etc/crio/crio.conf`
-(and runc section) to get the binary.
-
 ## What not to use (and why)
 
 | Approach | Why it is weak |
 |----------|----------------|
+| `crio_annotations` on spoofed POD/sandbox ID | Always null when `drop_infra_ctr=true`; handler is on sandbox, not in-memory POD annotations |
 | Inspect conmon / conmon-rs process cmdline | Fragile; conmon-rs (`runtime_type = "pod"`) changes the process model |
 | `/proc/<container-pid>/exe` or parent chain | Shows the **workload**, not the OCI runtime |
 | cgroup path under `kubepods` | Same for crun and runc; encodes pod/sandbox, not runtime |
-| Standard `crictl inspectp` / `PodSandboxStatus` | CRI API does **not** expose `runtimeHandler` in sandbox status — only CRI-O's internal annotations/config carry it |
-| Workload container `crio status` alone | Handler is on sandbox spec; use sandbox ID or the `sandbox:` field first |
+| Standard `crictl inspectp` / `PodSandboxStatus` | CRI API does **not** expose `runtimeHandler` in sandbox status |
 
 ## Practical decision tree
 
@@ -155,33 +202,44 @@ Combine with `grep -A5 '\[crio.runtime.runtimes.crun\]' /etc/crio/crio.conf`
 flowchart TD
   start["Need runtime for a pod"]
   hasSocket{"CRI-O socket available?"}
-  api["crio status containers -i sandbox-id OR curl /containers/id"]
-  handler["Read io.kubernetes.cri-o.RuntimeHandler"]
+  inspect["curl /containers/id or crio status containers -i"]
+  handler["Read runtime_handler field"]
+  workload{"Workload container exists?"}
+  directPath["crio_annotations platform-runtime-path.crio.io"]
   empty{"Handler empty?"}
   default["Use default_runtime from crio config"]
   map["Look up Runtimes.handler.runtime_path"]
+  disk["Read sandbox userdata/config.json"]
+  k8s["kubectl runtimeClassName + crio.conf"]
   result["crun or runc path"]
 
   start --> hasSocket
-  hasSocket -->|yes| api --> handler --> empty
-  hasSocket -->|no| k8s["kubectl runtimeClassName + crio.conf on node"]
+  hasSocket -->|yes| inspect --> handler --> empty
+  hasSocket -->|yes| workload -->|yes| directPath --> result
+  hasSocket -->|no| disk --> handler
+  hasSocket -->|no| k8s --> map
   empty -->|yes| default --> map
   empty -->|no| map
-  k8s --> map
   map --> result
 ```
 
 ## Summary
 
-**Best overall:** `crio status containers -i <sandbox-id>` (or HTTP
-`/containers/<sandbox-id>`) for the handler, then `crio status config` (or
-`crictl info -o json`) to resolve `runtime_path`.
+**Best per-pod (live):** `curl .../containers/<any-container-in-pod>` and read
+`runtime_handler`, then `crio status config` (or `crictl info -o json`) to
+resolve `runtime_path`. For workload containers, read
+`platform-runtime-path.crio.io` from `crio_annotations` for the binary directly.
 
-**Best without CRI-O daemon:** read sandbox `userdata/config.json` annotation +
+**Best without CRI-O daemon:** sandbox `userdata/config.json` +
 `crio.conf` runtime table.
 
-**Best without any node access:** Kubernetes `runtimeClassName` → RuntimeClass
-`.handler` → documented node `crio.conf` mapping.
+**Best without node access:** Kubernetes `runtimeClassName` → RuntimeClass
+`.handler` → node `crio.conf` mapping.
+
+**Spoofed POD caveat:** querying only the sandbox/POD ID will show
+`crio_annotations: null` — that is expected with `drop_infra_ctr=true`. Use
+`runtime_handler` on the inspect response, a workload container ID, or on-disk
+`config.json`.
 
 No conmon inspection is required because CRI-O records the decision at sandbox
 creation time and persists it independently of the monitor process.
