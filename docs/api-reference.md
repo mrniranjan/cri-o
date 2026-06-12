@@ -90,7 +90,8 @@ The `server` package implements the Kubernetes CRI gRPC services
 object that receives all CRI requests from the kubelet.
 
 See also: [Data Structures Reference](data-structures.md) |
-[Container Creation Flow](container-creation-flow.md)
+[Container Creation Flow](container-creation-flow.md) |
+[Runtime Detection](runtime-detection.md)
 
 ### Server Lifecycle
 
@@ -1050,7 +1051,7 @@ The `Sandbox` struct exposes read-only accessors for all pod properties:
 | `Annotations()`    | `map[string]string`         | Pod annotations            |
 | `Metadata()`       | `*types.PodSandboxMetadata` | CRI metadata               |
 | `CgroupParent()`   | `string`                    | Cgroup parent path         |
-| `RuntimeHandler()` | `string`                    | Runtime handler name       |
+| `RuntimeHandler()` | `string`                    | Runtime handler name ([how to resolve crun/runc](runtime-detection.md)) |
 | `Privileged()`     | `bool`                      | Privileged flag            |
 | `HostNetwork()`    | `bool`                      | Host network flag          |
 | `PortMappings()`   | `[]*hostport.PortMapping`   | Port mappings              |

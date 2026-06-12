@@ -345,6 +345,8 @@ To set the timezone for a container in CRI-O. If an empty string is provided, CR
 
 The "crio.runtime.runtimes" table defines a list of OCI compatible runtimes. The runtime to use is picked based on the runtime handler provided by the CRI. If no runtime handler is provided, the runtime will be picked based on the level of trust of the workload. This option supports live configuration reload. This option supports live configuration reload.
 
+See [runtime-detection.md](runtime-detection.md) for how to determine which runtime (e.g. crun or runc) a pod is using without inspecting conmon.
+
 **runtime_path**=""
 Path to the OCI compatible runtime used for this runtime handler.
 

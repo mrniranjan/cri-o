@@ -40,7 +40,8 @@
   <!-- /toc -->
 
 See also: [API Reference](api-reference.md) |
-[Container Creation Flow](container-creation-flow.md)
+[Container Creation Flow](container-creation-flow.md) |
+[Runtime Detection](runtime-detection.md)
 
 ---
 

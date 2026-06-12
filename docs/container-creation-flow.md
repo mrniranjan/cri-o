@@ -11,7 +11,8 @@
 <!-- /toc -->
 
 See also: [API Reference](api-reference.md) |
-[Data Structures Reference](data-structures.md)
+[Data Structures Reference](data-structures.md) |
+[Runtime Detection](runtime-detection.md)
 
 ---
 

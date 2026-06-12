@@ -15,9 +15,22 @@ func ContainerCgroupDirName(containerID string) string {
 	return containerCgroupPath(containerID)
 }
 
+// cgroupV2FilesystemPath returns absPath as a path under the cgroup v2 unified mount.
+// Systemd cgroup paths from ExpandSlice are hierarchy paths rooted at the slice (for example
+// /kubepods.slice/...) and omit the /sys/fs/cgroup prefix; OCI and filepath.Rel need the full path.
+func cgroupV2FilesystemPath(absPath string) string {
+	if strings.HasPrefix(absPath, CgroupMemoryPathV2+"/") || absPath == CgroupMemoryPathV2 {
+		return absPath
+	}
+
+	return filepath.Join(CgroupMemoryPathV2, strings.TrimPrefix(absPath, "/"))
+}
+
 // OCIRelativeCgroupPath returns the linux.cgroupsPath value relative to the cgroup v2 mount root.
 func OCIRelativeCgroupPath(absPath string) (string, error) {
-	rel, err := filepath.Rel(CgroupMemoryPathV2, absPath)
+	rooted := cgroupV2FilesystemPath(absPath)
+
+	rel, err := filepath.Rel(CgroupMemoryPathV2, rooted)
 	if err != nil {
 		return "", err
 	}

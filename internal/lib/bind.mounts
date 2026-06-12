@@ -1,0 +1,14 @@
+[
+  {
+    "source": "/tmp/restore-test-directory1974718519",
+    "destination": "/dir",
+    "file_type": "directory",
+    "permissions": 448
+  },
+  {
+    "source": "/tmp/restore-test-file4185167157",
+    "destination": "/file",
+    "file_type": "file",
+    "permissions": 384
+  }
+]

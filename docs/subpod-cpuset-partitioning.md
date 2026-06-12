@@ -36,7 +36,7 @@ Sub-pod nesting adjusts **OCI `linux.cgroupsPath`** so the **child** sandbox liv
 
 So the gap is **not** only layout; it is **coordination** between:
 
-- what the **kubelet** believes each pod owns, and  
+- what the **kubelet** believes each pod owns, and
 - what **cpuset** is written for **parent** vs **child** cgroups on disk.
 
 Until those align, **in-container** `cpuset.cpus` can remain **disjoint** even when paths nest.
@@ -83,10 +83,10 @@ Even with an **empty parent + leaves** cgroup tree in CRI-O, **kubelet** may sti
 
 Reasonable directions (conceptual):
 
-| Direction | Notes |
-| --------- | ----- |
-| **Kubelet / CRI / KEP** | First-class “sub-pod” or shared budget so the **child** does **not** take a **second** exclusive allocation; child cpuset is a **partition** of the **parent’s** assignment. |
-| **Policy / scheduling** | Admission or scheduler rules so resource **requests** match the intended budget (orthogonal to cgroup layout). |
+| Direction               | Notes                                                                                                                                                                                                 |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Kubelet / CRI / KEP** | First-class “sub-pod” or shared budget so the **child** does **not** take a **second** exclusive allocation; child cpuset is a **partition** of the **parent’s** assignment.                          |
+| **Policy / scheduling** | Admission or scheduler rules so resource **requests** match the intended budget (orthogonal to cgroup layout).                                                                                        |
 | **CRI-O-only override** | Forcing OCI `linux.resources.cpu` for the child **without** kubelet alignment risks **double booking**, wrong **allocatable**, and incorrect scheduling assumptions—**unsafe** as a general solution. |
 
 ---
